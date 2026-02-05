@@ -1,0 +1,19 @@
+include:
+  - local: 'ci-build.yml'
+  - local: 'ci-test.yml'
+
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  DOCKER_IMAGE: myapp:latest
+
+deploy:staging:
+  stage: deploy
+  needs:
+    - test:unit
+    - test:integration
+  script:
+    - kubectl apply -f k8s/staging/

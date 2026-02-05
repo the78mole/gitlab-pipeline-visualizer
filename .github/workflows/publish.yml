@@ -1,0 +1,115 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:  # Allow manual trigger for testing
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/glab-pipeviz/
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.release.tag_name }}
+
+    - name: Check PyPI token
+      run: |
+        if [ -z "${{ secrets.PYPI_TOKEN }}" ]; then
+          echo "❌ ERROR: PYPI_TOKEN secret is not set!"
+          echo ""
+          echo "To publish to PyPI, you need to configure a PyPI API token:"
+          echo "1. Create token at https://pypi.org/manage/account/"
+          echo "2. Add it as repository secret named 'PYPI_TOKEN'"
+          echo "3. See .github/PYPI_SETUP.md for detailed instructions"
+          echo ""
+          exit 1
+        fi
+        echo "✓ PYPI_TOKEN is configured"
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install uv
+      run: |
+        curl -LsSf https://astral.sh/uv/install.sh | sh
+        echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+    - name: Verify version matches release tag
+      if: github.event_name == 'release'
+      run: |
+        # Extract version from tag (remove 'v' prefix)
+        TAG_VERSION="${{ github.event.release.tag_name }}"
+        TAG_VERSION="${TAG_VERSION#v}"
+
+        # Get version from pyproject.toml
+        PKG_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+
+        echo "Release tag version: $TAG_VERSION"
+        echo "Package version: $PKG_VERSION"
+
+        if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+          echo "❌ Version mismatch!"
+          echo "Release tag: $TAG_VERSION"
+          echo "pyproject.toml: $PKG_VERSION"
+          exit 1
+        fi
+        echo "✓ Version match confirmed: $TAG_VERSION"
+
+    - name: Build package
+      run: |
+        uv build
+        echo "📦 Build artifacts:"
+        ls -lh dist/
+
+    - name: Verify build artifacts
+      run: |
+        # Check that expected files exist
+        if [ ! -f dist/glab_pipeviz-*.tar.gz ]; then
+          echo "❌ Source distribution not found"
+          exit 1
+        fi
+        if [ ! -f dist/glab_pipeviz-*.whl ]; then
+          echo "❌ Wheel distribution not found"
+          exit 1
+        fi
+        echo "✓ Build artifacts verified"
+
+    - name: Test installation from wheel
+      run: |
+        python -m venv test_env
+        source test_env/bin/activate
+        pip install dist/glab_pipeviz-*.whl
+        glab-pipeviz --help
+        deactivate
+        rm -rf test_env
+        echo "✓ Installation test successful"
+
+    - name: Publish to PyPI
+      env:
+        UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+      run: |
+        uv publish
+        echo "✓ Published to PyPI successfully"
+
+    - name: Display publication info
+      if: success()
+      run: |
+        PKG_VERSION=$(grep '^version = ' pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+        echo "🎉 Successfully published glab-pipeviz v$PKG_VERSION to PyPI"
+        echo "📦 PyPI: https://pypi.org/project/glab-pipeviz/$PKG_VERSION/"
+        echo ""
+        echo "Installation command:"
+        echo "  pip install glab-pipeviz==$PKG_VERSION"
+        echo "  uv tool install glab-pipeviz==$PKG_VERSION"

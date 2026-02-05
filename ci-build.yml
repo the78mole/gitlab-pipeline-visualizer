@@ -1,0 +1,10 @@
+build:docker:
+  stage: build
+  script:
+    - docker build -t $DOCKER_IMAGE .
+
+build:npm:
+  stage: build
+  script:
+    - npm install
+    - npm run build
