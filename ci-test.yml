@@ -1,0 +1,13 @@
+test:unit:
+  stage: test
+  needs: [build:npm]
+  script:
+    - npm test
+
+test:integration:
+  stage: test
+  needs: 
+    - build:docker
+    - build:npm
+  script:
+    - pytest tests/integration/

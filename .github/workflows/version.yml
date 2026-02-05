@@ -1,0 +1,118 @@
+name: Semantic Versioning
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  versioning:
+    name: Generate semantic version
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # Fetch all history for proper versioning
+
+    - name: Semantic versioning
+      id: version
+      uses: paulhatch/semantic-version@v5.4.0
+      with:
+        branch: main
+        version_format: "${major}.${minor}.${patch}"
+        major_pattern: "/^(feat|fix|refactor)!:/"
+        minor_pattern: "/^feat:/"
+        tag_prefix: "v"
+        bump_each_commit: true
+        search_commit_body: true
+
+    - name: Display version information
+      run: |
+        echo "🏷️  Version: ${{ steps.version.outputs.version }}"
+        echo "📌 Version Tag: ${{ steps.version.outputs.version_tag }}"
+        echo "🔢 Major: ${{ steps.version.outputs.major }}"
+        echo "🔢 Minor: ${{ steps.version.outputs.minor }}"
+        echo "🔢 Patch: ${{ steps.version.outputs.patch }}"
+        echo "🔄 Increment: ${{ steps.version.outputs.increment }}"
+        echo "📝 Previous Version: ${{ steps.version.outputs.previous_version }}"
+        echo "🏷️  Previous Tag: ${{ steps.version.outputs.previous_tag }}"
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+
+    - name: Install toml package
+      run: pip install toml
+
+    - name: Update version in pyproject.toml
+      run: |
+        python << 'EOF'
+        import toml
+        
+        # Read pyproject.toml
+        with open('pyproject.toml', 'r') as f:
+            config = toml.load(f)
+        
+        # Update version
+        new_version = "${{ steps.version.outputs.version }}"
+        config['project']['version'] = new_version
+        
+        # Write back
+        with open('pyproject.toml', 'w') as f:
+            toml.dump(config, f)
+        
+        print(f"✓ Updated version to {new_version} in pyproject.toml")
+        EOF
+
+    - name: Check for version changes
+      id: check_changes
+      run: |
+        if git diff --quiet pyproject.toml; then
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "No version changes detected"
+        else
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "Version changes detected"
+        fi
+
+    - name: Commit version update
+      if: steps.check_changes.outputs.changed == 'true'
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "github-actions[bot]"
+        git add pyproject.toml
+        git commit -m "chore: bump version to ${{ steps.version.outputs.version }} [skip ci]"
+
+    - name: Create and push tag
+      if: steps.check_changes.outputs.changed == 'true'
+      run: |
+        git tag ${{ steps.version.outputs.version_tag }}
+        git push origin main
+        git push origin ${{ steps.version.outputs.version_tag }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create GitHub Release
+      if: steps.check_changes.outputs.changed == 'true'
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.version.outputs.version_tag }}
+        release_name: Release ${{ steps.version.outputs.version }}
+        body: |
+          ## Changes
+          
+          Version bump: ${{ steps.version.outputs.previous_version }} → ${{ steps.version.outputs.version }}
+          
+          **Type:** ${{ steps.version.outputs.increment }}
+          
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for detailed changes.
+        draft: false
+        prerelease: false
