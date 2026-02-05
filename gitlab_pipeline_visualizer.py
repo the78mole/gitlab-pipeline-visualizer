@@ -66,11 +66,28 @@ class GitLabCIParser:
         Args:
             yaml_path: Path to the GitLab CI YAML file
         """
-        self.yaml_path = Path(yaml_path)
-        self.base_dir = self.yaml_path.parent
+        self.yaml_path = Path(yaml_path).resolve()
+        self.base_dir = self._find_repo_root()
         self.config = {}
         self.jobs = {}
         self.stages = []
+    
+    def _find_repo_root(self):
+        """
+        Find the Git repository root or fallback to YAML file's parent directory.
+        GitLab CI 'local:' includes are relative to the repository root.
+        """
+        # Try to find .git directory by walking up the tree
+        current = self.yaml_path.parent
+        while current != current.parent:  # Stop at filesystem root
+            if (current / '.git').exists():
+                logger.debug(f"Found Git repository root: {current}")
+                return current
+            current = current.parent
+        
+        # Fallback to YAML file's parent directory
+        logger.debug(f"No Git repository found, using YAML parent: {self.yaml_path.parent}")
+        return self.yaml_path.parent
         
     def load_yaml(self, file_path):
         """Load and parse a YAML file."""
