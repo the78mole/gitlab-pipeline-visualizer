@@ -1,6 +1,6 @@
 include:
-  - local: 'ci-build.yml'
-  - local: 'ci-test.yml'
+  - local: 'gitlab-test/ci-build.yml'
+  - local: 'gitlab-test/ci-test.yml'
 
 stages:
   - build

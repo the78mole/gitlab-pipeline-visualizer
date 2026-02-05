@@ -95,7 +95,7 @@ jobs:
 
     - name: Test with includes
       run: |
-        glab-pipeviz test-with-includes.yml --output raw > includes.mmd
+        glab-pipeviz gitlab-test/test-with-includes.yml --output raw > includes.mmd
         grep -q "build_docker" includes.mmd
         grep -q "test_unit" includes.mmd
         echo "✓ Include resolution works"
