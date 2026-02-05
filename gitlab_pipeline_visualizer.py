@@ -106,12 +106,13 @@ class GitLabCIParser:
             for inc in includes:
                 # Handle different include formats
                 if isinstance(inc, str):
-                    # Simple string path
-                    include_path = self.base_dir / inc
+                    # Simple string path - strip leading slash to ensure relative path
+                    include_path = self.base_dir / inc.lstrip('/')
                 elif isinstance(inc, dict):
                     # Dict with 'local' key
                     if 'local' in inc:
-                        include_path = self.base_dir / inc['local']
+                        # Strip leading slash to ensure relative path
+                        include_path = self.base_dir / inc['local'].lstrip('/')
                     else:
                         # Skip remote includes (project, remote, template)
                         logger.warning(f"Skipping non-local include: {inc}")
