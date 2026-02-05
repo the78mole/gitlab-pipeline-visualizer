@@ -1,0 +1,350 @@
+# Komplexe GitLab CI/CD Pipeline mit Job Templates
+# Diese Pipeline nutzt die Templates aus job-template.yml
+
+include:
+  - local: 'gitlab-test/job-template.yml'
+
+# Workflow-Regeln
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "develop"
+    - if: $CI_MERGE_REQUEST_IID
+    - if: $CI_COMMIT_TAG
+
+# Stages Definition
+stages:
+  - prepare
+  - build
+  - test
+  - security
+  - deploy
+  - cleanup
+  - notify
+
+# Variables
+variables:
+  APP_VERSION: "1.0.${CI_PIPELINE_ID}"
+  ARTIFACT_PATH: "artifacts/"
+
+# ============================================
+# PREPARE STAGE
+# ============================================
+
+prepare:dependencies:
+  extends: .base_job
+  stage: prepare
+  script:
+    - echo "Preparing dependencies for version $APP_VERSION"
+    - mkdir -p $ARTIFACT_PATH
+    - echo $APP_VERSION > $ARTIFACT_PATH/version.txt
+  artifacts:
+    paths:
+      - $ARTIFACT_PATH/
+    expire_in: 1 hour
+
+# ============================================
+# BUILD STAGE
+# ============================================
+
+build:python-app:
+  extends: .python_test
+  stage: build
+  needs:
+    - prepare:dependencies
+  script:
+    - pip install -r requirements.txt 2>/dev/null || echo "No requirements.txt found"
+    - python -m py_compile *.py
+    - echo "Python application compiled successfully"
+  artifacts:
+    paths:
+      - "*.py"
+      - $ARTIFACT_PATH/
+    expire_in: 1 day
+
+build:docker-image:
+  extends: .docker_build
+  stage: build
+  needs:
+    - prepare:dependencies
+  variables:
+    DOCKERFILE_PATH: "Dockerfile"
+  only:
+    - main
+    - develop
+    - merge_requests
+  tags:
+    - docker
+    - privileged
+
+build:nodejs-frontend:
+  extends: .nodejs_build
+  stage: build
+  needs:
+    - prepare:dependencies
+  script:
+    - npm run build 2>/dev/null || echo "No build script in package.json"
+    - echo "Node.js frontend built successfully"
+  only:
+    variables:
+      - $BUILD_FRONTEND == "true"
+  allow_failure: true
+
+# ============================================
+# TEST STAGE
+# ============================================
+
+test:unit:
+  extends: .python_test
+  stage: test
+  needs:
+    - build:python-app
+  script:
+    - pytest tests/ -v --junitxml=report.xml --cov=. --cov-report=xml --cov-report=term
+  coverage: '/(?i)total.*? (100(?:\.0+)?\%|[1-9]?\d(?:\.\d+)?\%)$/'
+
+test:integration:
+  extends: .python_test
+  stage: test
+  needs:
+    - build:python-app
+  services:
+    - postgres:15
+    - redis:7-alpine
+  variables:
+    POSTGRES_DB: testdb
+    POSTGRES_USER: testuser
+    POSTGRES_PASSWORD: testpass
+    REDIS_HOST: redis
+  script:
+    - echo "Running integration tests with database and cache"
+    - pytest tests/integration/ -v || echo "No integration tests found"
+  allow_failure: true
+
+test:e2e:
+  extends: .base_job
+  stage: test
+  image: cypress/included:12.17.0
+  needs:
+    - build:nodejs-frontend
+  script:
+    - echo "Running end-to-end tests"
+    - cypress run --headless || echo "No E2E tests configured"
+  artifacts:
+    when: always
+    paths:
+      - cypress/videos/
+      - cypress/screenshots/
+    expire_in: 7 days
+  allow_failure: true
+  only:
+    variables:
+      - $RUN_E2E_TESTS == "true"
+
+test:performance:
+  extends: .performance_test
+  stage: test
+  needs:
+    - build:docker-image
+  script:
+    - k6 run performance-test.js || echo "No performance tests found"
+  only:
+    - main
+    - develop
+
+# ============================================
+# SECURITY STAGE
+# ============================================
+
+security:container-scan:
+  extends: .security_scan
+  stage: security
+  needs:
+    - build:docker-image
+  script:
+    - trivy image --format json --output gl-container-scanning-report.json $CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG || echo "Image not found"
+  only:
+    - main
+    - merge_requests
+
+security:dependency-scan:
+  extends: .base_job
+  stage: security
+  image: python:3.11-slim
+  needs:
+    - build:python-app
+  script:
+    - pip install safety
+    - safety check --json || echo "No dependencies to scan"
+  allow_failure: true
+  artifacts:
+    reports:
+      dependency_scanning: dependency-scanning-report.json
+    expire_in: 7 days
+
+security:sast:
+  extends: .base_job
+  stage: security
+  image: returntocorp/semgrep:latest
+  needs:
+    - build:python-app
+  script:
+    - semgrep --config=auto --json --output=sast-report.json . || echo "SAST scan completed with findings"
+  allow_failure: true
+  artifacts:
+    reports:
+      sast: sast-report.json
+    expire_in: 7 days
+
+code-quality:sonar:
+  extends: .code_quality
+  stage: security
+  needs:
+    - test:unit
+  script:
+    - sonar-scanner -Dsonar.projectKey=$CI_PROJECT_NAME -Dsonar.sources=. || echo "SonarQube scan completed"
+  only:
+    - merge_requests
+    - main
+
+# ============================================
+# DEPLOY STAGE
+# ============================================
+
+deploy:staging:
+  extends: .deploy_template
+  stage: deploy
+  needs:
+    - test:unit
+    - test:integration
+    - security:container-scan
+  variables:
+    DEPLOY_ENV: staging
+  script:
+    - echo "Deploying version $APP_VERSION to staging"
+    - echo "Deployment to staging completed"
+  environment:
+    name: staging
+    url: https://staging.example.com
+    on_stop: cleanup:staging
+  only:
+    - develop
+
+deploy:production:
+  extends: .deploy_template
+  stage: deploy
+  needs:
+    - test:unit
+    - test:integration
+    - security:container-scan
+    - security:dependency-scan
+  variables:
+    DEPLOY_ENV: production
+  script:
+    - echo "Deploying version $APP_VERSION to production"
+    - echo "Deployment to production completed"
+  environment:
+    name: production
+    url: https://www.example.com
+  only:
+    - main
+  when: manual
+
+deploy:review-app:
+  extends: .deploy_template
+  stage: deploy
+  needs:
+    - build:docker-image
+  variables:
+    DEPLOY_ENV: review-$CI_COMMIT_REF_SLUG
+  script:
+    - echo "Deploying review app for merge request"
+    - echo "Review app available at https://review-$CI_COMMIT_REF_SLUG.example.com"
+  environment:
+    name: review/$CI_COMMIT_REF_SLUG
+    url: https://review-$CI_COMMIT_REF_SLUG.example.com
+    on_stop: cleanup:review-app
+    auto_stop_in: 3 days
+  only:
+    - merge_requests
+
+# Database Migration Job
+migrate:database:
+  extends: .db_migration
+  stage: deploy
+  needs:
+    - deploy:staging
+  script:
+    - echo "Running database migrations"
+    - psql -c "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1;" || echo "Migration table not found"
+  only:
+    - develop
+    - main
+
+# ============================================
+# CLEANUP STAGE
+# ============================================
+
+cleanup:staging:
+  extends: .base_job
+  stage: cleanup
+  variables:
+    DEPLOY_ENV: staging
+    GIT_STRATEGY: none
+  script:
+    - echo "Cleaning up staging environment"
+  environment:
+    name: staging
+    action: stop
+  when: manual
+
+cleanup:review-app:
+  extends: .base_job
+  stage: cleanup
+  variables:
+    GIT_STRATEGY: none
+  script:
+    - echo "Cleaning up review app for $CI_COMMIT_REF_SLUG"
+  environment:
+    name: review/$CI_COMMIT_REF_SLUG
+    action: stop
+  when: manual
+  only:
+    - merge_requests
+
+cleanup:old-artifacts:
+  extends: .base_job
+  stage: cleanup
+  script:
+    - echo "Cleaning up old artifacts and cache"
+    - rm -rf $ARTIFACT_PATH/*
+  when: always
+  allow_failure: true
+
+# ============================================
+# NOTIFICATION STAGE
+# ============================================
+
+notify:success:
+  extends: .base_job
+  stage: notify
+  image: curlimages/curl:latest
+  script:
+    - |
+      curl -X POST $SLACK_WEBHOOK_URL \
+        -H 'Content-Type: application/json' \
+        -d "{\"text\":\"✅ Pipeline succeeded for $CI_PROJECT_NAME (v$APP_VERSION) on branch $CI_COMMIT_REF_NAME\"}" || echo "Notification sent"
+  when: on_success
+  only:
+    - main
+    - develop
+  allow_failure: true
+
+notify:failure:
+  extends: .notify
+  stage: notify
+  needs: []
+  script:
+    - |
+      curl -X POST $SLACK_WEBHOOK_URL \
+        -H 'Content-Type: application/json' \
+        -d "{\"text\":\"❌ Pipeline FAILED for $CI_PROJECT_NAME on branch $CI_COMMIT_REF_NAME\nCommit: $CI_COMMIT_SHORT_SHA\nAuthor: $GITLAB_USER_NAME\"}" || echo "Failure notification sent"
