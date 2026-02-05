@@ -1,6 +1,6 @@
 [project]
 name = "glab-pipeviz"
-version = "0.1.0"
+version = "0.1.1"
 description = "Visualize GitLab CI/CD pipeline configuration as a Mermaid diagram from local YAML files"
 readme = "README.md"
 requires-python = ">=3.8"
